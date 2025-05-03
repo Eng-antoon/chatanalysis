@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WhatsApp Chat Analyzer</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    .section { margin-bottom: 20px; }
+    label { display: block; margin-bottom: 5px; }
+    #results { border-top: 1px solid #ccc; padding-top: 20px; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+    th { background-color: #f4f4f4; }
+    details { margin-bottom: 15px; }
+    summary { font-weight: bold; cursor: pointer; }
+    .chart .bar { display: flex; align-items: center; margin-bottom: 5px; }
+    .chart .bar span { width: 100px; }
+    .chart .fill { height: 20px; background-color: #4caf50; }
+    button.load-more { display: block; margin: 5px 0; padding: 5px 10px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <h1>WhatsApp Chat Analyzer</h1>
+
+  <div class="section">
+    <label for="threshold">Quick Reply Threshold (minutes):</label>
+    <input type="number" id="threshold" value="5" min="1" />
+  </div>
+
+  <div class="section">
+    <label for="fileInput">Upload WhatsApp Chat Backup (.txt):</label>
+    <input type="file" id="fileInput" accept=".txt" />
+  </div>
+
+  <div id="results"></div>
+
+  <script>
+    const excludedWords = ['el','w','ana','enty','bs','kda','eh','media','omitted','msh'];
+    const LOAD_BATCH = 20;
+
+    document.getElementById('fileInput').addEventListener('change', event => {
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => analyzeChat(reader.result);
+      reader.readAsText(file, 'UTF-8');
+    });
+
+    // Levenshtein distance
+    function levenshtein(a, b) {
+      const matrix = [];
+      for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+      for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+      for (let i = 1; i <= b.length; i++) {
+        for (let j = 1; j <= a.length; j++) {
+          matrix[i][j] = b[i-1] === a[j-1]
+            ? matrix[i-1][j-1]
+            : Math.min(matrix[i-1][j-1]+1, matrix[i][j-1]+1, matrix[i-1][j]+1);
+        }
+      }
+      return matrix[b.length][a.length];
+    }
+
+    function consolidateCounts(counts, thresholdRatio = 0.2) {
+      const result = {};
+      Object.keys(counts).forEach(key => {
+        let merged = false;
+        for (const rep in result) {
+          const dist = levenshtein(key, rep);
+          const ratio = dist / Math.max(key.length, rep.length);
+          if (ratio <= thresholdRatio) {
+            result[rep] += counts[key];
+            merged = true;
+            break;
+          }
+        }
+        if (!merged) result[key] = counts[key];
+      });
+      return result;
+    }
+
+    function analyzeChat(text) {
+      const msgs = parseMessages(text);
+      if (msgs.length < 2) {
+        alert('No valid chat messages found or too few messages to analyze.');
+        return;
+      }
+      const users = [...new Set(msgs.map(m => m.sender))];
+      const wordStats = analyzeWords(msgs, users);
+      const sentenceStats = analyzeSentences(msgs, users);
+      const respStats = analyzeResponseTimes(msgs);
+      const startStats = analyzeConversationStarts(msgs);
+      displayResults(users, wordStats, sentenceStats, respStats, startStats);
+    }
+
+    function parseMessages(text) {
+      return text.split(/\r?\n/).reduce((msgs, line) => {
+        const re = /^(\d{1,2})\/(\d{1,2})\/(\d{2}),\s*(\d{1,2}):(\d{2})\s*([AP]M)\s*-\s*([^:]+):\s*(.*)$/;
+        const m = line.match(re);
+        if (m) {
+          let [_, mo,d,yr,h,min,ampm,sender,content] = m;
+          let hour = +h;
+          if (ampm === 'PM' && hour < 12) hour += 12;
+          if (ampm === 'AM' && hour === 12) hour = 0;
+          const date = new Date(2000+ +yr, +mo-1, +d, hour, +min);
+          msgs.push({ timestamp: date, sender: sender.trim(), content: content.trim() });
+        } else if (msgs.length) {
+          msgs[msgs.length-1].content += ' ' + line.trim();
+        }
+        return msgs;
+      }, []);
+    }
+
+    function analyzeWords(msgs, users) {
+      const raw = {};
+      users.forEach(u => raw[u] = {});
+      msgs.forEach(({sender, content}) => {
+        content.toLowerCase()
+          .replace(/[^؀-ۿ\w\s]|_/g, ' ')
+          .split(/\s+/)
+          .filter(w => w && !excludedWords.includes(w))
+          .forEach(w => raw[sender][w] = (raw[sender][w]||0) + 1);
+      });
+      const stats = {};
+      users.forEach(u => {
+        // filter first to reduce items
+        const filtered = Object.fromEntries(
+          Object.entries(raw[u]).filter(([k, c]) => c >= 10)
+        );
+        const cons = consolidateCounts(filtered);
+        stats[u] = Object.entries(cons)
+          .sort((a, b) => b[1] - a[1]);
+      });
+      return stats;
+    }
+
+    function analyzeSentences(msgs, users) {
+      const raw = {};
+      users.forEach(u => raw[u] = {});
+      msgs.forEach(({sender, content}) => {
+        content.split(/[\.\!?]\s*/)
+          .map(s => s.trim())
+          .filter(s => s)
+          .forEach(s => raw[sender][s] = (raw[sender][s]||0) + 1);
+      });
+      const stats = {};
+      users.forEach(u => {
+        const filtered = Object.fromEntries(
+          Object.entries(raw[u]).filter(([k, c]) => c >= 10)
+        );
+        const cons = consolidateCounts(filtered, 0.1);
+        stats[u] = Object.entries(cons)
+          .sort((a, b) => b[1] - a[1]);
+      });
+      return stats;
+    }
+
+    function analyzeResponseTimes(msgs) {
+      const diffs = [];
+      let prev = null;
+      msgs.forEach(msg => {
+        if (prev && msg.sender !== prev.sender) {
+          const mins = (msg.timestamp - prev.timestamp) / 60000;
+          if (mins <= 1440) diffs.push(mins);
+        }
+        prev = msg;
+      });
+      const threshold = parseFloat(document.getElementById('threshold').value) || 5;
+      const quick = diffs.filter(d => d <= threshold);
+      const activeSec = diffs.reduce((a, b) => a + b, 0) * 60;
+      const avg = diffs.length ? diffs.reduce((a, b) => a + b, 0) / diffs.length : 0;
+      return { activeDuration: activeSec, avgReply: avg, quickCount: quick.length, quickTime: quick.reduce((a, b) => a + b, 0) };
+    }
+
+    function analyzeConversationStarts(msgs) {
+      const counts = {};
+      let total = 0;
+      msgs.forEach((m, i) => {
+        if (i === 0 || (m.timestamp - msgs[i-1].timestamp) / 60000 >= 240) {
+          counts[m.sender] = (counts[m.sender] || 0) + 1;
+          total++;
+        }
+      });
+      const perc = {};
+      Object.keys(counts).forEach(u => perc[u] = counts[u] / total * 100);
+      return { counts, perc };
+    }
+
+    function formatDuration(sec) {
+      const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600);
+      const m = Math.floor((sec % 3600) / 60), s = Math.floor(sec % 60);
+      return `${d}d ${h}h ${m}m ${s}s`;
+    }
+
+    function makeLoadMore(table) {
+      const rows = Array.from(table.querySelectorAll('tr')).slice(1);
+      if (rows.length <= LOAD_BATCH) return;
+      rows.forEach((r, i) => { if (i >= LOAD_BATCH) r.style.display = 'none'; });
+      const btn = document.createElement('button');
+      btn.className = 'load-more'; btn.innerText = 'Load more...';
+      btn.addEventListener('click', () => { rows.forEach(r => r.style.display = ''); btn.remove(); });
+      table.parentNode.insertBefore(btn, table.nextSibling);
+    }
+
+    function displayResults(users, wordStats, sentenceStats, respStats, startStats) {
+      const div = document.getElementById('results'); div.innerHTML = '';
+      const info = document.createElement('details'); info.open = true;
+      info.innerHTML = `<summary>Chat Metrics</summary>
+        <p>Active chat time (excl. >24h gaps): <strong>${formatDuration(respStats.activeDuration)}</strong></p>
+        <p>Avg reply time: <strong>${respStats.avgReply.toFixed(2)} min</strong></p>
+        <p>Quick replies (≤ threshold): <strong>${respStats.quickCount}</strong>, total <strong>${respStats.quickTime.toFixed(2)} min</strong></p>`;
+      div.appendChild(info);
+
+      const startD = document.createElement('details'); startD.open = true;
+      startD.innerHTML = `<summary>Conversation Starters (%)</summary>`;
+      const stTable = document.createElement('table');
+      stTable.innerHTML = '<tr><th>User</th><th>Starts</th><th>%</th></tr>';
+      users.forEach(u => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${u}</td><td>${startStats.counts[u]||0}</td><td>${startStats.perc[u].toFixed(2)}%</td>`;
+        stTable.appendChild(tr);
+      });
+      startD.appendChild(stTable);
+      const chart = document.createElement('div'); chart.className = 'chart';
+      users.forEach(u => {
+        const bar = document.createElement('div'); bar.className = 'bar';
+        bar.innerHTML = `<span>${u}</span><div class="fill" style="width:${startStats.perc[u]}%"></div>`;
+        chart.appendChild(bar);
+      });
+      startD.appendChild(chart);
+      div.appendChild(startD);
+
+      users.forEach(u => {
+        const ud = document.createElement('details');
+        const sum = document.createElement('summary'); sum.innerText = `User: ${u}`;
+        ud.appendChild(sum);
+
+        const wSec = document.createElement('details');
+        wSec.innerHTML = `<summary>Words & Counts (count ≥ 10)</summary>`;
+        const wTbl = document.createElement('table');
+        wTbl.innerHTML = '<tr><th>Word</th><th>Count</th></tr>';
+        wordStats[u].forEach(([w, c]) => { const r = document.createElement('tr'); r.innerHTML = `<td>${w}</td><td>${c}</td>`; wTbl.appendChild(r); });
+        wSec.appendChild(wTbl);
+        makeLoadMore(wTbl);
+        ud.appendChild(wSec);
+
+        const sSec = document.createElement('details');
+        sSec.innerHTML = `<summary>Sentences & Counts (count ≥ 10)</summary>`;
+        const sTbl = document.createElement('table');
+        sTbl.innerHTML = '<tr><th>Sentence</th><th>Count</th></tr>';
+        sentenceStats[u].forEach(([s, c]) => { const r = document.createElement('tr'); r.innerHTML = `<td>${s}</td><td>${c}</td>`; sTbl.appendChild(r); });
+        sSec.appendChild(sTbl);
+        makeLoadMore(sTbl);
+        ud.appendChild(sSec);
+
+        div.appendChild(ud);
+      });
+    }
+  </script>
+</body>
+</html>
