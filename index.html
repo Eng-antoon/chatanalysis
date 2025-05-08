@@ -110,6 +110,76 @@
       background: #ffebee;
       color: #c62828;
     }
+    .message-viewer {
+      max-height: 400px;
+      overflow-y: auto;
+      background: #f5f5f5;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      margin-top: 15px;
+    }
+    .message {
+      padding: 8px 12px;
+      margin: 8px;
+      border-radius: 8px;
+      max-width: 70%;
+      position: relative;
+    }
+    .message-sender {
+      font-size: 0.8rem;
+      font-weight: bold;
+      margin-bottom: 4px;
+    }
+    .message-time {
+      font-size: 0.7rem;
+      color: #777;
+      position: absolute;
+      bottom: 4px;
+      right: 8px;
+    }
+    .message-left {
+      background: white;
+      align-self: flex-start;
+      border-top-left-radius: 0;
+      margin-right: auto;
+    }
+    .message-right {
+      background: #dcf8c6;
+      align-self: flex-end;
+      border-top-right-radius: 0;
+      margin-left: auto;
+    }
+    .message-container {
+      display: flex;
+      flex-direction: column;
+    }
+    .search-highlight {
+      background-color: yellow;
+      font-weight: bold;
+    }
+    .tab-container {
+      display: flex;
+      border-bottom: 1px solid #ddd;
+      margin-bottom: 15px;
+    }
+    .tab {
+      padding: 8px 16px;
+      cursor: pointer;
+      border: 1px solid transparent;
+    }
+    .tab.active {
+      border: 1px solid #ddd;
+      border-bottom-color: white;
+      border-radius: 4px 4px 0 0;
+      margin-bottom: -1px;
+      background: white;
+    }
+    .tab-content {
+      display: none;
+    }
+    .tab-content.active {
+      display: block;
+    }
   </style>
 </head>
 <body>
@@ -136,7 +206,29 @@
   </div>
 
   <script>
-    const excludedWords = ['el','w','ana','enty','bs','kda','eh','media','omitted','msh'];
+    const excludedWords = [
+      // Common short words
+      'el','w','ana','enty','bs','kda','eh','media','omitted','msh',
+      // English common words
+      'the','a','an','and','or','but','is','are','was','were','am','be','been','being',
+      'in','on','at','to','for','with','by','about','against','between','into','through',
+      'during','before','after','above','below','from','up','down','of','off','over','under',
+      'again','further','then','once','here','there','when','where','why','how','all','any',
+      'both','each','few','more','most','other','some','such','no','nor','not','only','own',
+      'same','so','than','too','very','can','will','just','should','now'
+    ];
+    const SYSTEM_MESSAGES = [
+      'messages and calls are end-to-end encrypted', 
+      'changed the group', 
+      'added', 
+      'left', 
+      'removed', 
+      'changed the subject',
+      'changed their phone number',
+      'created group',
+      'deleted this message',
+      '<media omitted>'
+    ];
     const LOAD_BATCH = 20;
     const FUZZY_RATIO = 0.3;  // threshold for fuzzy match
 
@@ -173,17 +265,60 @@
 
     function parseMessages(text) {
       return text.split(/\r?\n/).reduce((msgs, line) => {
-        const re = /^(\d{1,2})\/(\d{1,2})\/(\d{2}),\s*(\d{1,2}):(\d{2})\s*([AP]M)\s*-\s*([^:]+):\s*(.*)$/;
-        const m = line.match(re);
-        if (m) {
-          let [_, mo,d,yr,h,min,ampm,sender,content] = m, hour = +h;
-          if (ampm==='PM'&&hour<12) hour+=12;
-          if (ampm==='AM'&&hour===12) hour=0;
-          const date = new Date(2000+ +yr, +mo-1, +d, hour, +min);
+        // Support multiple WhatsApp export formats
+        const dateFormats = [
+          // Standard format: MM/DD/YY, h:mm AM/PM - Sender: Message
+          /^(\d{1,2})\/(\d{1,2})\/(\d{2,4}),\s*(\d{1,2}):(\d{2})\s*([AP]M)\s*-\s*([^:]+):\s*(.*)$/,
+          // European format: DD/MM/YY, HH:MM - Sender: Message (24h format)
+          /^(\d{1,2})\/(\d{1,2})\/(\d{2,4}),\s*(\d{1,2}):(\d{2})\s*-\s*([^:]+):\s*(.*)$/,
+          // ISO-like format: YYYY-MM-DD, HH:MM - Sender: Message
+          /^(\d{4})-(\d{1,2})-(\d{1,2}),\s*(\d{1,2}):(\d{2})\s*-\s*([^:]+):\s*(.*)$/
+        ];
+        
+        let matched = false;
+        
+        // Try standard format with AM/PM
+        const m1 = line.match(dateFormats[0]);
+        if (m1) {
+          let [_, mo, d, yr, h, min, ampm, sender, content] = m1, hour = +h;
+          // Fix year format (2-digit vs 4-digit)
+          yr = yr.length === 2 ? 2000 + parseInt(yr) : parseInt(yr);
+          if (ampm === 'PM' && hour < 12) hour += 12;
+          if (ampm === 'AM' && hour === 12) hour = 0;
+          const date = new Date(yr, +mo-1, +d, hour, +min);
           msgs.push({ timestamp: date, sender: sender.trim(), content: content.trim() });
-        } else if (msgs.length) {
+          matched = true;
+        } 
+        
+        // Try 24h format without AM/PM
+        else if (!matched) {
+          const m2 = line.match(dateFormats[1]);
+          if (m2) {
+            let [_, d, mo, yr, h, min, sender, content] = m2;
+            // Fix year format
+            yr = yr.length === 2 ? 2000 + parseInt(yr) : parseInt(yr);
+            const date = new Date(yr, +mo-1, +d, +h, +min);
+            msgs.push({ timestamp: date, sender: sender.trim(), content: content.trim() });
+            matched = true;
+          }
+        }
+
+        // Try ISO-like format
+        else if (!matched) {
+          const m3 = line.match(dateFormats[2]);
+          if (m3) {
+            let [_, yr, mo, d, h, min, sender, content] = m3;
+            const date = new Date(+yr, +mo-1, +d, +h, +min);
+            msgs.push({ timestamp: date, sender: sender.trim(), content: content.trim() });
+            matched = true;
+          }
+        }
+        
+        // Continue message from previous line
+        else if (msgs.length) {
           msgs[msgs.length-1].content += ' ' + line.trim();
         }
+        
         return msgs;
       }, []);
     }
@@ -191,16 +326,28 @@
     function analyzeWords(msgs, users) {
       const raw = {}; users.forEach(u=>raw[u]={});
       msgs.forEach(({sender,content})=>{
+        // Skip system messages and empty messages
+        if (!content || SYSTEM_MESSAGES.some(msg => content.toLowerCase().includes(msg.toLowerCase()))) {
+          return;
+        }
+        
         content.toLowerCase()
                .replace(/[^؀-ۿ\w\s]|_/g,' ')
                .split(/\s+/)
-               .filter(w=>w&&!excludedWords.includes(w))
+               .filter(w => {
+                 // Better filtering: exclude common words, short words, and numbers-only words
+                 return w && 
+                        w.length > 1 && 
+                        !excludedWords.includes(w) && 
+                        !/^\d+$/.test(w);
+               })
                .forEach(w=> raw[sender][w] = (raw[sender][w]||0)+1);
       });
       const stats = {};
       users.forEach(u=>{
         const filtered = Object.fromEntries(
-          Object.entries(raw[u]).filter(([k,c])=>c>=10)
+          Object.entries(raw[u])
+            .filter(([k,c])=>c>=5) // Lower threshold to 5 for better results
         );
         const cons = consolidateCounts(filtered);
         stats[u] = Object.entries(cons).sort((a,b)=>b[1]-a[1]);
@@ -211,17 +358,25 @@
     function analyzeSentences(msgs, users) {
       const raw = {}; users.forEach(u=>raw[u]={});
       msgs.forEach(({sender,content})=>{
-        content.split(/[\.\!?]\s*/)
-               .map(s=>s.trim())
-               .filter(s=>s)
-               .forEach(s=> raw[sender][s] = (raw[sender][s]||0)+1);
+        // Skip system messages
+        if (!content || SYSTEM_MESSAGES.some(msg => content.toLowerCase().includes(msg.toLowerCase()))) {
+          return;
+        }
+        
+        // Improved sentence splitting - handle multiple punctuation types
+        content.split(/[.!?]+\s*/)
+               .map(s => s.trim())
+               .filter(s => s && s.length >= 3 && s.split(/\s+/).length >= 2) // At least 2 words and 3 chars
+               .forEach(s => raw[sender][s] = (raw[sender][s]||0)+1);
       });
       const stats = {};
       users.forEach(u=>{
         const filtered = Object.fromEntries(
-          Object.entries(raw[u]).filter(([k,c])=>c>=10)
+          Object.entries(raw[u])
+            .filter(([k,c]) => c >= 3) // Lower threshold for sentences
         );
-        const cons = consolidateCounts(filtered, 0.1);
+        // Use stricter similarity for sentences
+        const cons = consolidateCounts(filtered, 0.15);
         stats[u] = Object.entries(cons).sort((a,b)=>b[1]-a[1]);
       });
       return stats;
@@ -265,33 +420,86 @@
     function analyzeInterest(msgs, startStats, respStats) {
       const threshold = parseFloat(document.getElementById('threshold').value)||5;
       const interest = {};
-      _users.forEach(u=>{
-        const diffs = respStats.diffsByUser[u]||[];
+      
+      // Message count analysis
+      const msgCounts = {};
+      _users.forEach(u => msgCounts[u] = 0);
+      msgs.forEach(msg => msgCounts[msg.sender]++);
+      const totalMsgs = msgs.length;
+      const msgRatios = {};
+      _users.forEach(u => msgRatios[u] = msgCounts[u] / totalMsgs);
+      
+      // Message length analysis
+      const lengthStats = {};
+      _users.forEach(u => lengthStats[u] = { total: 0, count: 0 });
+      msgs.forEach(msg => {
+        lengthStats[msg.sender].total += msg.content.length;
+        lengthStats[msg.sender].count++;
+      });
+      const avgLengths = {};
+      _users.forEach(u => {
+        avgLengths[u] = lengthStats[u].count ? 
+                         lengthStats[u].total / lengthStats[u].count : 0;
+      });
+      
+      // Normalize avg lengths to 0-1
+      const maxLength = Math.max(...Object.values(avgLengths));
+      const normalizedLengths = {};
+      _users.forEach(u => normalizedLengths[u] = maxLength ? avgLengths[u] / maxLength : 0);
+      
+      _users.forEach(u => {
+        const diffs = respStats.diffsByUser[u] || [];
         const responses = diffs.length;
-        const quick = diffs.filter(d=>d<=threshold).length;
-        const responseRate = responses ? quick/responses : 0;
-        const startRate = startStats.perc[u]/100;
-        const score = responseRate*0.6 + startRate*0.4;
-        interest[u] = { responseRate, startRate, score, interested: score>=0.5 };
+        const quick = diffs.filter(d => d <= threshold).length;
+        const responseRate = responses ? quick / responses : 0;
+        const startRate = startStats.perc[u] / 100;
+        
+        // Enhanced interest score with more factors
+        const score = responseRate * 0.4 + 
+                     startRate * 0.2 + 
+                     msgRatios[u] * 0.3 + 
+                     normalizedLengths[u] * 0.1;
+                     
+        interest[u] = { 
+          responseRate, 
+          startRate, 
+          messageRatio: msgRatios[u],
+          avgMsgLength: avgLengths[u],
+          score, 
+          interested: score >= 0.4  // Lower threshold
+        };
       });
       return interest;
     }
 
     function consolidateCounts(counts, thresholdRatio=0.2) {
       const result = {};
-      Object.keys(counts).forEach(key=>{
+      // Process longer strings first for better merging
+      const sortedKeys = Object.keys(counts).sort((a, b) => b.length - a.length);
+      
+      for (const key of sortedKeys) {
         let merged = false;
         for (const rep in result) {
           const dist = levenshtein(key, rep);
           const ratio = dist/Math.max(key.length, rep.length);
           if (ratio <= thresholdRatio) {
-            result[rep] += counts[key];
+            // Choose the shorter representation as the canonical form
+            // unless the longer one is much more frequent
+            const canonical = (counts[key] > counts[rep] * 1.5 && key.length < rep.length * 1.2) ? key : rep;
+            if (canonical !== rep) {
+              // Move counts to the new canonical form
+              result[canonical] = (result[canonical] || 0) + result[rep];
+              delete result[rep];
+              result[canonical] += counts[key];
+            } else {
+              result[rep] += counts[key];
+            }
             merged = true;
             break;
           }
         }
         if (!merged) result[key] = counts[key];
-      });
+      }
       return result;
     }
 
@@ -323,115 +531,315 @@
       const users = [...new Set(msgs.map(m=>m.sender))];
       _msgs = msgs; _users = users;
 
+      // Add timeline analysis
+      const timeStats = analyzeTimeline(msgs, users);
+      
       const wordStats = analyzeWords(msgs, users);
       const sentenceStats = analyzeSentences(msgs, users);
       const respStats = analyzeResponseTimes(msgs);
       const startStats = analyzeConversationStarts(msgs);
 
-      displayResults(users, wordStats, sentenceStats, respStats, startStats);
+      displayResults(users, wordStats, sentenceStats, respStats, startStats, timeStats);
     }
 
-    function displayResults(users, wordStats, sentenceStats, respStats, startStats) {
+    function analyzeTimeline(msgs, users) {
+      // Group messages by day
+      const dailyCounts = {};
+      users.forEach(u => dailyCounts[u] = {});
+      
+      msgs.forEach(({ sender, timestamp }) => {
+        const day = timestamp.toISOString().slice(0, 10);
+        dailyCounts[sender][day] = (dailyCounts[sender][day] || 0) + 1;
+      });
+      
+      // Get all unique days
+      const allDays = new Set();
+      users.forEach(u => {
+        Object.keys(dailyCounts[u]).forEach(day => allDays.add(day));
+      });
+      
+      // Sort days
+      const sortedDays = [...allDays].sort();
+      
+      // Messages by hour of day
+      const hourlyActivity = {};
+      users.forEach(u => {
+        hourlyActivity[u] = Array(24).fill(0);
+      });
+      
+      msgs.forEach(({ sender, timestamp }) => {
+        const hour = timestamp.getHours();
+        hourlyActivity[sender][hour]++;
+      });
+      
+      return { 
+        dailyCounts,
+        sortedDays,
+        hourlyActivity
+      };
+    }
+
+    function displayResults(users, wordStats, sentenceStats, respStats, startStats, timeStats) {
       const div = document.getElementById('results');
-      div.innerHTML = '';
+      div.innerHTML = '<div class="section"><p>Analyzing chat data...</p></div>';
+      
+      // Use setTimeout to improve UI responsiveness
+      setTimeout(() => {
+        div.innerHTML = '';
 
-      // Chat Metrics
-      const info = document.createElement('details');
-      info.open = true;
-      info.className = 'section';
-      info.innerHTML = `
-        <summary>Chat Metrics</summary>
-        <p>Active chat time (excl. >24h gaps): <strong>${formatDuration(respStats.activeDuration)}</strong></p>
-        <p>Avg reply time: <strong>${respStats.avgReply.toFixed(2)} min</strong></p>
-        <p>Quick replies (≤ threshold): <strong>${respStats.quickCount}</strong>, total <strong>${respStats.quickTime.toFixed(2)} min</strong></p>
-      `;
-      div.appendChild(info);
-
-      // Conversation Starters
-      const startD = document.createElement('details');
-      startD.open = true;
-      startD.className = 'section';
-      startD.innerHTML = `<summary>Conversation Starters (%)</summary>`;
-      const stTable = document.createElement('table');
-      stTable.innerHTML = '<tr><th>User</th><th>Starts</th><th>%</th></tr>';
-      users.forEach(u=>{
-        const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${u}</td><td>${startStats.counts[u]||0}</td><td>${startStats.perc[u].toFixed(2)}%</td>`;
-        stTable.appendChild(tr);
-      });
-      startD.appendChild(stTable);
-      const chart = document.createElement('div'); chart.className='chart';
-      users.forEach(u=>{
-        const bar = document.createElement('div'); bar.className='bar';
-        bar.innerHTML = `<span>${u}</span><div class="fill" style="width:${startStats.perc[u]}%"></div>`;
-        chart.appendChild(bar);
-      });
-      startD.appendChild(chart);
-      div.appendChild(startD);
-
-      // Interest Analysis
-      const interestStats = analyzeInterest(_msgs, startStats, respStats);
-      const interestDiv = document.createElement('div');
-      interestDiv.className = 'section';
-      const ih = document.createElement('h2');
-      ih.innerText = 'Interest Analysis';
-      interestDiv.appendChild(ih);
-      const interestContainer = document.createElement('div');
-      interestContainer.className = 'interest';
-      users.forEach(u=>{
-        const st = interestStats[u];
-        const box = document.createElement('div');
-        box.className = st.interested ? 'interested' : 'not-interested';
-        box.innerHTML = `
-          <strong>${u}</strong><br>
-          Response rate: ${(st.responseRate*100).toFixed(1)}%<br>
-          Start rate: ${(st.startRate*100).toFixed(1)}%<br>
-          Score: ${(st.score*100).toFixed(1)}%<br>
-          ${st.interested ? 'Likely interested' : 'Less interested'}
+        // Chat Metrics
+        const info = document.createElement('details');
+        info.open = true;
+        info.className = 'section';
+        info.innerHTML = `
+          <summary>Chat Metrics</summary>
+          <p>Total messages: <strong>${_msgs.length}</strong></p>
+          <p>Date range: <strong>${_msgs[0].timestamp.toLocaleDateString()}</strong> to <strong>${_msgs[_msgs.length-1].timestamp.toLocaleDateString()}</strong></p>
+          <p>Active chat time (excl. >24h gaps): <strong>${formatDuration(respStats.activeDuration)}</strong></p>
+          <p>Avg reply time: <strong>${respStats.avgReply.toFixed(2)} min</strong></p>
+          <p>Quick replies (≤ threshold): <strong>${respStats.quickCount}</strong>, total <strong>${respStats.quickTime.toFixed(2)} min</strong></p>
         `;
-        interestContainer.appendChild(box);
-      });
-      interestDiv.appendChild(interestContainer);
-      div.appendChild(interestDiv);
-
-      // Per-user Word/Sentence Lists
-      users.forEach(u=>{
-        const ud = document.createElement('details');
-        ud.className = 'section';
-        const sum = document.createElement('summary');
-        sum.innerText = `User: ${u}`;
-        ud.appendChild(sum);
-
-        // Words
-        const wSec = document.createElement('details');
-        wSec.innerHTML = `<summary>Words & Counts (count ≥ 10)</summary>`;
-        const wTbl = document.createElement('table');
-        wTbl.innerHTML = '<tr><th>Word</th><th>Count</th></tr>';
-        wordStats[u].forEach(([w,c])=>{
-          const r = document.createElement('tr');
-          r.innerHTML = `<td>${w}</td><td>${c}</td>`;
-          wTbl.appendChild(r);
+        div.appendChild(info);
+        
+        // Conversation Starters
+        const startD = document.createElement('details');
+        startD.open = true;
+        startD.className = 'section';
+        startD.innerHTML = `<summary>Conversation Starters (%)</summary>`;
+        const stTable = document.createElement('table');
+        stTable.innerHTML = '<tr><th>User</th><th>Starts</th><th>%</th></tr>';
+        users.forEach(u=>{
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${u}</td><td>${startStats.counts[u]||0}</td><td>${startStats.perc[u].toFixed(2)}%</td>`;
+          stTable.appendChild(tr);
         });
-        wSec.appendChild(wTbl);
-        makeLoadMore(wTbl);
-        ud.appendChild(wSec);
-
-        // Sentences
-        const sSec = document.createElement('details');
-        sSec.innerHTML = `<summary>Sentences & Counts (count ≥ 10)</summary>`;
-        const sTbl = document.createElement('table');
-        sTbl.innerHTML = '<tr><th>Sentence</th><th>Count</th></tr>';
-        sentenceStats[u].forEach(([s,c])=>{
-          const r = document.createElement('tr');
-          r.innerHTML = `<td>${s}</td><td>${c}</td>`;
-          sTbl.appendChild(r);
+        startD.appendChild(stTable);
+        const chart = document.createElement('div'); chart.className='chart';
+        users.forEach(u=>{
+          const bar = document.createElement('div'); bar.className='bar';
+          bar.innerHTML = `<span>${u}</span><div class="fill" style="width:${startStats.perc[u]}%"></div>`;
+          chart.appendChild(bar);
         });
-        sSec.appendChild(sTbl);
-        makeLoadMore(sTbl);
-        ud.appendChild(sSec);
+        startD.appendChild(chart);
+        div.appendChild(startD);
 
-        div.appendChild(ud);
-      });
+        // Interest Analysis
+        const interestStats = analyzeInterest(_msgs, startStats, respStats);
+        const interestDiv = document.createElement('div');
+        interestDiv.className = 'section';
+        const ih = document.createElement('h2');
+        ih.innerText = 'Interest Analysis';
+        interestDiv.appendChild(ih);
+        const interestContainer = document.createElement('div');
+        interestContainer.className = 'interest';
+        users.forEach(u => {
+          const st = interestStats[u];
+          const box = document.createElement('div');
+          box.className = st.interested ? 'interested' : 'not-interested';
+          box.innerHTML = `
+            <strong>${u}</strong><br>
+            Response rate: ${(st.responseRate*100).toFixed(1)}%<br>
+            Start rate: ${(st.startRate*100).toFixed(1)}%<br>
+            Message ratio: ${(st.messageRatio*100).toFixed(1)}%<br>
+            Avg msg length: ${st.avgMsgLength.toFixed(0)} chars<br>
+            Score: ${(st.score*100).toFixed(1)}%<br>
+            ${st.interested ? 'Likely interested' : 'Less interested'}
+          `;
+          interestContainer.appendChild(box);
+        });
+        interestDiv.appendChild(interestContainer);
+        div.appendChild(interestDiv);
+        
+        // Timeline visualization
+        const timelineDiv = document.createElement('div');
+        timelineDiv.className = 'section';
+        const timelineSummary = document.createElement('details');
+        timelineSummary.open = true;
+        timelineSummary.innerHTML = '<summary>Message Timeline</summary>';
+        
+        // Daily activity chart
+        const dailyDiv = document.createElement('div');
+        dailyDiv.innerHTML = '<h3>Daily Activity</h3>';
+        
+        // Create a simplified timeline view for very long chats
+        let timelineDays = timeStats.sortedDays;
+        if (timelineDays.length > 30) {
+          // Group by month for long chats
+          const monthlyData = {};
+          users.forEach(u => monthlyData[u] = {});
+          
+          users.forEach(u => {
+            Object.entries(timeStats.dailyCounts[u]).forEach(([day, count]) => {
+              const month = day.substring(0, 7); // YYYY-MM
+              monthlyData[u][month] = (monthlyData[u][month] || 0) + count;
+            });
+          });
+          
+          const allMonths = new Set();
+          users.forEach(u => {
+            Object.keys(monthlyData[u]).forEach(month => allMonths.add(month));
+          });
+          
+          const sortedMonths = [...allMonths].sort();
+          
+          // Create monthly chart
+          const monthlyChart = document.createElement('div');
+          monthlyChart.className = 'chart';
+          
+          users.forEach((u, idx) => {
+            const userColor = `hsl(${(idx * 360 / users.length) % 360}, 70%, 50%)`;
+            sortedMonths.forEach(month => {
+              const count = monthlyData[u][month] || 0;
+              if (count > 0) {
+                const bar = document.createElement('div');
+                bar.className = 'bar';
+                bar.innerHTML = `
+                  <span>${month} - ${u}</span>
+                  <div class="fill" style="width:${Math.min(100, count/10)}%; background-color:${userColor}"></div>
+                  <span>${count} msgs</span>
+                `;
+                monthlyChart.appendChild(bar);
+              }
+            });
+          });
+          
+          dailyDiv.appendChild(monthlyChart);
+        } else {
+          // Use full daily view for shorter chats
+          const dailyChart = document.createElement('div');
+          dailyChart.className = 'chart';
+          
+          users.forEach((u, idx) => {
+            const userColor = `hsl(${(idx * 360 / users.length) % 360}, 70%, 50%)`;
+            timeStats.sortedDays.forEach(day => {
+              const count = timeStats.dailyCounts[u][day] || 0;
+              if (count > 0) {
+                const bar = document.createElement('div');
+                bar.className = 'bar';
+                bar.innerHTML = `
+                  <span>${day} - ${u}</span>
+                  <div class="fill" style="width:${Math.min(100, count*5)}%; background-color:${userColor}"></div>
+                  <span>${count} msgs</span>
+                `;
+                dailyChart.appendChild(bar);
+              }
+            });
+          });
+          
+          dailyDiv.appendChild(dailyChart);
+        }
+        
+        timelineSummary.appendChild(dailyDiv);
+        
+        // Hourly activity chart
+        const hourlyDiv = document.createElement('div');
+        hourlyDiv.innerHTML = '<h3>Activity by Hour of Day</h3>';
+        const hourlyChart = document.createElement('div');
+        hourlyChart.className = 'chart';
+        
+        for (let h = 0; h < 24; h++) {
+          const bar = document.createElement('div');
+          bar.className = 'bar';
+          
+          let hourText = h.toString().padStart(2, '0') + ':00';
+          bar.innerHTML = `<span>${hourText}</span>`;
+          
+          const hourlyBars = document.createElement('div');
+          hourlyBars.style.display = 'flex';
+          hourlyBars.style.flex = '1';
+          
+          const maxHourly = Math.max(...users.map(u => timeStats.hourlyActivity[u][h]));
+          
+          users.forEach((u, idx) => {
+            const userColor = `hsl(${(idx * 360 / users.length) % 360}, 70%, 50%)`;
+            const count = timeStats.hourlyActivity[u][h];
+            
+            if (count > 0) {
+              const userBar = document.createElement('div');
+              userBar.className = 'fill';
+              userBar.style.backgroundColor = userColor;
+              userBar.style.width = `${(count / maxHourly) * 100}%`;
+              userBar.style.marginRight = '2px';
+              userBar.title = `${u}: ${count} messages`;
+              
+              hourlyBars.appendChild(userBar);
+            }
+          });
+          
+          bar.appendChild(hourlyBars);
+          hourlyChart.appendChild(bar);
+        }
+        
+        hourlyDiv.appendChild(hourlyChart);
+        
+        // Add legend
+        const legend = document.createElement('div');
+        legend.style.display = 'flex';
+        legend.style.justifyContent = 'center';
+        legend.style.marginTop = '10px';
+        
+        users.forEach((u, idx) => {
+          const userColor = `hsl(${(idx * 360 / users.length) % 360}, 70%, 50%)`;
+          const legendItem = document.createElement('div');
+          legendItem.style.display = 'flex';
+          legendItem.style.alignItems = 'center';
+          legendItem.style.marginRight = '15px';
+          
+          const colorBox = document.createElement('div');
+          colorBox.style.width = '12px';
+          colorBox.style.height = '12px';
+          colorBox.style.backgroundColor = userColor;
+          colorBox.style.marginRight = '5px';
+          
+          legendItem.appendChild(colorBox);
+          legendItem.appendChild(document.createTextNode(u));
+          legend.appendChild(legendItem);
+        });
+        
+        hourlyDiv.appendChild(legend);
+        timelineSummary.appendChild(hourlyDiv);
+        timelineDiv.appendChild(timelineSummary);
+        div.appendChild(timelineDiv);
+
+        // Per-user Word/Sentence Lists
+        users.forEach(u=>{
+          const ud = document.createElement('details');
+          ud.className = 'section';
+          const sum = document.createElement('summary');
+          sum.innerText = `User: ${u}`;
+          ud.appendChild(sum);
+
+          // Words
+          const wSec = document.createElement('details');
+          wSec.innerHTML = `<summary>Words & Counts (count ≥ 5)</summary>`;
+          const wTbl = document.createElement('table');
+          wTbl.innerHTML = '<tr><th>Word</th><th>Count</th></tr>';
+          wordStats[u].forEach(([w,c])=>{
+            const r = document.createElement('tr');
+            r.innerHTML = `<td>${w}</td><td>${c}</td>`;
+            wTbl.appendChild(r);
+          });
+          wSec.appendChild(wTbl);
+          makeLoadMore(wTbl);
+          ud.appendChild(wSec);
+
+          // Sentences
+          const sSec = document.createElement('details');
+          sSec.innerHTML = `<summary>Sentences & Counts (count ≥ 3)</summary>`;
+          const sTbl = document.createElement('table');
+          sTbl.innerHTML = '<tr><th>Sentence</th><th>Count</th></tr>';
+          sentenceStats[u].forEach(([s,c])=>{
+            const r = document.createElement('tr');
+            r.innerHTML = `<td>${s}</td><td>${c}</td>`;
+            sTbl.appendChild(r);
+          });
+          sSec.appendChild(sTbl);
+          makeLoadMore(sTbl);
+          ud.appendChild(sSec);
+
+          div.appendChild(ud);
+        });
+      }, 50); // Short timeout to allow UI to update
     }
 
     // Fuzzy word-count within one message
@@ -460,6 +868,65 @@
       return count;
     }
 
+    function fuzzySearch(content, query) {
+      // For multi-word queries
+      if (query.includes(' ')) {
+        // For exact phrase matching
+        return {
+          match: content.toLowerCase().includes(query),
+          count: substringCount(content, query),
+          highlightedText: content.replace(
+            new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'),
+            match => `<span class="search-highlight">${match}</span>`
+          )
+        };
+      }
+      
+      // For fuzzy single word matching
+      const words = content
+        .toLowerCase()
+        .replace(/[^؀-ۿ\w\s]|_/g,' ')
+        .split(/\s+/)
+        .filter(Boolean);
+        
+      let matches = [];
+      let count = 0;
+      
+      for (let i = 0; i < words.length; i++) {
+        const w = words[i];
+        const dist = levenshtein(w, query);
+        const ratio = dist / Math.max(w.length, query.length);
+        
+        if (ratio <= FUZZY_RATIO) {
+          matches.push(i);
+          count++;
+        }
+      }
+      
+      // Highlight matching words
+      if (matches.length > 0) {
+        const contentWords = content.split(/(\s+)/);
+        let highlightedText = '';
+        
+        for (let i = 0; i < contentWords.length; i++) {
+          if (i % 2 === 0) { // Not a whitespace
+            const wordIndex = Math.floor(i / 2);
+            if (matches.includes(wordIndex)) {
+              highlightedText += `<span class="search-highlight">${contentWords[i]}</span>`;
+            } else {
+              highlightedText += contentWords[i];
+            }
+          } else {
+            highlightedText += contentWords[i]; // Add the whitespace
+          }
+        }
+        
+        return { match: true, count, highlightedText };
+      }
+      
+      return { match: false, count: 0, highlightedText: content };
+    }
+
     function displaySearch(query) {
       const div = document.getElementById('results');
       const old = document.getElementById('searchResults');
@@ -469,24 +936,72 @@
       sr.id = 'searchResults';
       sr.className = 'section';
       const header = document.createElement('h2');
-      header.innerText = `Search results for “${query}”`;
+      header.innerText = `Search results for "${query}"`;
       sr.appendChild(header);
 
-      const counts = {}, series = {};
-      _users.forEach(u => { counts[u] = 0; series[u] = {}; });
+      // Create tabs
+      const tabContainer = document.createElement('div');
+      tabContainer.className = 'tab-container';
+      
+      const summaryTab = document.createElement('div');
+      summaryTab.className = 'tab active';
+      summaryTab.innerText = 'Summary';
+      summaryTab.dataset.tab = 'summary';
+      
+      const messagesTab = document.createElement('div');
+      messagesTab.className = 'tab';
+      messagesTab.innerText = 'Messages';
+      messagesTab.dataset.tab = 'messages';
+      
+      tabContainer.appendChild(summaryTab);
+      tabContainer.appendChild(messagesTab);
+      sr.appendChild(tabContainer);
+      
+      // Tab contents
+      const summaryContent = document.createElement('div');
+      summaryContent.className = 'tab-content active';
+      summaryContent.id = 'summary-tab';
+      
+      const messagesContent = document.createElement('div');
+      messagesContent.className = 'tab-content';
+      messagesContent.id = 'messages-tab';
 
-      _msgs.forEach(({ sender, content, timestamp }) => {
-        const day = timestamp.toISOString().slice(0,10);
-        const cnt = query.includes(' ')
-          ? substringCount(content, query)
-          : fuzzyCount(content, query);
-        if (cnt > 0) {
-          counts[sender] += cnt;
-          series[sender][day] = (series[sender][day]||0) + cnt;
+      // Tab switching logic
+      tabContainer.addEventListener('click', (e) => {
+        if (e.target.classList.contains('tab')) {
+          document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+          e.target.classList.add('active');
+          
+          document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+          document.getElementById(`${e.target.dataset.tab}-tab`).classList.add('active');
         }
       });
 
-      // summary table
+      // Process search
+      const counts = {}, series = {};
+      _users.forEach(u => { counts[u] = 0; series[u] = {}; });
+      
+      // Find matching messages
+      const matchingMsgs = [];
+      
+      _msgs.forEach((msg) => {
+        const { sender, content, timestamp } = msg;
+        const day = timestamp.toISOString().slice(0, 10);
+        
+        const searchResult = fuzzySearch(content, query);
+        
+        if (searchResult.match) {
+          counts[sender] += searchResult.count;
+          series[sender][day] = (series[sender][day] || 0) + searchResult.count;
+          
+          matchingMsgs.push({
+            ...msg,
+            highlightedContent: searchResult.highlightedText
+          });
+        }
+      });
+
+      // Summary tab content
       const tbl = document.createElement('table');
       tbl.innerHTML = '<tr><th>User</th><th>Count</th></tr>';
       _users.forEach(u => {
@@ -494,9 +1009,9 @@
         tr.innerHTML = `<td>${u}</td><td>${counts[u]}</td>`;
         tbl.appendChild(tr);
       });
-      sr.appendChild(tbl);
+      summaryContent.appendChild(tbl);
 
-      // timeline charts
+      // Timeline charts
       _users.forEach(u => {
         const grp = document.createElement('details');
         grp.open = true;
@@ -507,22 +1022,243 @@
           p.innerText = 'No occurrences found';
           grp.appendChild(p);
         } else {
-          const max = Math.max(...dates.map(d=>series[u][d]));
+          const max = Math.max(...dates.map(d => series[u][d]));
           const chartDiv = document.createElement('div');
           chartDiv.className = 'chart';
           dates.forEach(d => {
             const bar = document.createElement('div');
             bar.className = 'bar';
             bar.innerHTML = `<span>${d}</span>
-                             <div class="fill" style="width:${(series[u][d]/max*100).toFixed(1)}%"></div>`;
+                            <div class="fill" style="width:${(series[u][d] / max * 100).toFixed(1)}%"></div>
+                            <span>${series[u][d]}</span>`;
             chartDiv.appendChild(bar);
           });
           grp.appendChild(chartDiv);
         }
-        sr.appendChild(grp);
+        summaryContent.appendChild(grp);
       });
-
+      
+      // Messages tab content
+      if (matchingMsgs.length > 0) {
+        const msgViewer = document.createElement('div');
+        msgViewer.className = 'message-viewer';
+        const msgContainer = document.createElement('div');
+        msgContainer.className = 'message-container';
+        
+        // Sort by timestamp
+        matchingMsgs.sort((a, b) => a.timestamp - b.timestamp);
+        
+        // Show context: Include some messages before and after each match
+        const contextMsgs = new Set();
+        matchingMsgs.forEach(msg => {
+          const index = _msgs.findIndex(m => 
+            m.timestamp.getTime() === msg.timestamp.getTime() && 
+            m.sender === msg.sender && 
+            m.content === msg.content
+          );
+          
+          if (index !== -1) {
+            // Add 2 messages before and after for context
+            for (let i = Math.max(0, index - 2); i <= Math.min(_msgs.length - 1, index + 2); i++) {
+              contextMsgs.add(i);
+            }
+          }
+        });
+        
+        // Convert to array and sort
+        const messagesToShow = [...contextMsgs].sort((a, b) => a - b).map(i => _msgs[i]);
+        
+        // Create message bubbles
+        messagesToShow.forEach(msg => {
+          const { sender, content, timestamp } = msg;
+          const isMatch = matchingMsgs.some(m => 
+            m.timestamp.getTime() === timestamp.getTime() && 
+            m.sender === sender
+          );
+          
+          const messageDiv = document.createElement('div');
+          messageDiv.className = `message ${_users[0] === sender ? 'message-right' : 'message-left'}`;
+          
+          if (isMatch) {
+            messageDiv.style.borderColor = '#ffeb3b';
+            messageDiv.style.borderWidth = '2px';
+          }
+          
+          const senderDiv = document.createElement('div');
+          senderDiv.className = 'message-sender';
+          senderDiv.innerText = sender;
+          messageDiv.appendChild(senderDiv);
+          
+          const contentDiv = document.createElement('div');
+          contentDiv.className = 'message-content';
+          
+          // Use highlighted content if available, otherwise regular content
+          const matchingMsg = matchingMsgs.find(m => 
+            m.timestamp.getTime() === timestamp.getTime() && 
+            m.sender === sender
+          );
+          
+          contentDiv.innerHTML = matchingMsg ? matchingMsg.highlightedContent : content;
+          messageDiv.appendChild(contentDiv);
+          
+          const timeDiv = document.createElement('div');
+          timeDiv.className = 'message-time';
+          timeDiv.innerText = timestamp.toLocaleString();
+          messageDiv.appendChild(timeDiv);
+          
+          msgContainer.appendChild(messageDiv);
+        });
+        
+        msgViewer.appendChild(msgContainer);
+        messagesContent.appendChild(msgViewer);
+      } else {
+        const noResults = document.createElement('p');
+        noResults.innerText = 'No matching messages found.';
+        messagesContent.appendChild(noResults);
+      }
+      
+      sr.appendChild(summaryContent);
+      sr.appendChild(messagesContent);
       div.insertBefore(sr, div.firstChild);
+    }
+
+    function viewMessages() {
+      const div = document.getElementById('results');
+      const old = document.getElementById('messageViewer');
+      if (old) {
+        old.remove();
+        return;
+      }
+      
+      const viewer = document.createElement('div');
+      viewer.id = 'messageViewer';
+      viewer.className = 'section';
+      
+      const header = document.createElement('h2');
+      header.innerText = 'Message Viewer';
+      viewer.appendChild(header);
+      
+      // Add filter controls
+      const controls = document.createElement('div');
+      controls.style.marginBottom = '15px';
+      
+      // Date range filter
+      const startDate = new Date(_msgs[0].timestamp);
+      const endDate = new Date(_msgs[_msgs.length - 1].timestamp);
+      
+      const dateControl = document.createElement('div');
+      dateControl.style.marginBottom = '10px';
+      dateControl.innerHTML = `
+        <label>Date range: </label>
+        <input type="date" id="msgStartDate" value="${startDate.toISOString().slice(0, 10)}">
+        <span> to </span>
+        <input type="date" id="msgEndDate" value="${endDate.toISOString().slice(0, 10)}">
+      `;
+      
+      // User filter
+      const userControl = document.createElement('div');
+      userControl.style.marginBottom = '10px';
+      userControl.innerHTML = '<label>User: </label>';
+      
+      const userSelect = document.createElement('select');
+      userSelect.id = 'msgUserFilter';
+      
+      const allOption = document.createElement('option');
+      allOption.value = 'all';
+      allOption.innerText = 'All users';
+      userSelect.appendChild(allOption);
+      
+      _users.forEach(u => {
+        const option = document.createElement('option');
+        option.value = u;
+        option.innerText = u;
+        userSelect.appendChild(option);
+      });
+      
+      userControl.appendChild(userSelect);
+      
+      // Apply button
+      const applyBtn = document.createElement('button');
+      applyBtn.innerText = 'Apply Filters';
+      applyBtn.style.marginLeft = '10px';
+      
+      controls.appendChild(dateControl);
+      controls.appendChild(userControl);
+      controls.appendChild(applyBtn);
+      viewer.appendChild(controls);
+      
+      // Message container
+      const msgViewer = document.createElement('div');
+      msgViewer.className = 'message-viewer';
+      const msgContainer = document.createElement('div');
+      msgContainer.className = 'message-container';
+      msgContainer.id = 'messageContainer';
+      
+      // Load first batch of messages
+      const displayMessages = (start, end, user) => {
+        msgContainer.innerHTML = '';
+        
+        const filteredMsgs = _msgs.filter(msg => {
+          const msgDate = new Date(msg.timestamp);
+          return msgDate >= start && msgDate <= end && 
+                 (user === 'all' || msg.sender === user);
+        });
+        
+        // Display a sample of messages (most recent 50)
+        const sampled = filteredMsgs.slice(-50);
+        
+        sampled.forEach(msg => {
+          const { sender, content, timestamp } = msg;
+          
+          const messageDiv = document.createElement('div');
+          messageDiv.className = `message ${_users[0] === sender ? 'message-right' : 'message-left'}`;
+          
+          const senderDiv = document.createElement('div');
+          senderDiv.className = 'message-sender';
+          senderDiv.innerText = sender;
+          messageDiv.appendChild(senderDiv);
+          
+          const contentDiv = document.createElement('div');
+          contentDiv.className = 'message-content';
+          contentDiv.innerText = content;
+          messageDiv.appendChild(contentDiv);
+          
+          const timeDiv = document.createElement('div');
+          timeDiv.className = 'message-time';
+          timeDiv.innerText = timestamp.toLocaleString();
+          messageDiv.appendChild(timeDiv);
+          
+          msgContainer.appendChild(messageDiv);
+        });
+        
+        // Show message count info
+        const infoText = document.createElement('p');
+        infoText.innerHTML = `Showing last ${sampled.length} of ${filteredMsgs.length} messages 
+                             matching filters. ${filteredMsgs.length > 50 ? 'Refine filters to see others.' : ''}`;
+        msgContainer.insertBefore(infoText, msgContainer.firstChild);
+      };
+      
+      // Initial display
+      displayMessages(startDate, endDate, 'all');
+      
+      // Handle filter application
+      applyBtn.addEventListener('click', () => {
+        const startStr = document.getElementById('msgStartDate').value;
+        const endStr = document.getElementById('msgEndDate').value;
+        const userVal = document.getElementById('msgUserFilter').value;
+        
+        const start = new Date(startStr);
+        // Set end date to end of day
+        const end = new Date(endStr);
+        end.setHours(23, 59, 59, 999);
+        
+        displayMessages(start, end, userVal);
+      });
+      
+      msgViewer.appendChild(msgContainer);
+      viewer.appendChild(msgViewer);
+      
+      div.insertBefore(viewer, div.firstChild);
     }
   </script>
 </body>
